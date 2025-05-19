@@ -1,12 +1,10 @@
-import os
 import requests
 import threading
 import time
 import random
 import re
 import json
-import asyncio
-import aiohttp
+import os
 
 # Telegram Bot info
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -22,7 +20,7 @@ HEADERS_LIST = [
 proxy_pool = []
 proxy_usage = {}
 proxy_lock = threading.Lock()
-MAX_THREADS = 20
+MAX_THREADS = 30
 running = False
 
 def send_telegram_message(message, buttons=False):
@@ -46,9 +44,8 @@ def send_telegram_message(message, buttons=False):
     except Exception as e:
         print(f"[Telegram error] {e}")
 
-# --- ASYNC PROXY SCRAPER AND VALIDATOR ---
-
-async def fetch_proxies():
+def scrape_proxies():
+    global proxy_pool, proxy_usage
     print("[INFO] Scraping proxies...")
     sources = [
         "https://www.proxy-list.download/api/v1/get?type=http",
@@ -59,56 +56,57 @@ async def fetch_proxies():
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
     ]
-
-    proxies = set()
-
-    async with aiohttp.ClientSession() as session:
-        tasks = []
-        for url in sources:
-            tasks.append(fetch_proxy_list(session, url, proxies))
-        await asyncio.gather(*tasks)
-
-    return list(proxies)
-
-async def fetch_proxy_list(session, url, proxies):
-    try:
-        async with session.get(url, timeout=10) as resp:
-            text = await resp.text()
+    new_proxies = set()
+    for url in sources:
+        try:
+            resp = requests.get(url, timeout=10)
+            text = resp.text
             found = re.findall(r'(\d{1,3}(?:\.\d{1,3}){3}:\d+)', text)
             for proxy in found:
-                proxies.add(f"http://{proxy}")
-    except:
-        pass
+                new_proxies.add(f"http://{proxy}")
+        except:
+            pass
+        time.sleep(2)
 
-async def validate_proxy(session, proxy, valid_proxies):
-    try:
-        headers = {'User-Agent': random.choice(HEADERS_LIST)}
-        async with session.get("https://www.tiktok.com", proxy=proxy, headers=headers, timeout=2.5) as resp:
-            if resp.status == 200:
-                valid_proxies.append(proxy)
-    except:
-        pass
+    total = len(new_proxies)
+    send_telegram_message(f"🔍 Validating {total} proxies...")
 
-async def scrape_proxies_async():
-    all_proxies = await fetch_proxies()
-    print(f"[INFO] Validating {len(all_proxies)} proxies...")
-
+    print(f"[INFO] Validating {total} proxies...")
     valid_proxies = []
-    connector = aiohttp.TCPConnector(limit=30)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = []
-        for proxy in all_proxies:
-            tasks.append(validate_proxy(session, proxy, valid_proxies))
-        await asyncio.gather(*tasks)
+    lock = threading.Lock()
+    counter = [0]
+
+    def validate(proxy):
+        try:
+            headers = {'User-Agent': random.choice(HEADERS_LIST)}
+            r = requests.get("https://www.tiktok.com", proxies={"http": proxy, "https": proxy}, headers=headers, timeout=2.5)
+            if r.status_code == 200:
+                with lock:
+                    valid_proxies.append(proxy)
+        except:
+            pass
+        with lock:
+            counter[0] += 1
+            if counter[0] % 100 == 0 or counter[0] == total:
+                send_telegram_message(f"✅ Validated {counter[0]} of {total} proxies...")
+
+    threads = []
+    for proxy in new_proxies:
+        t = threading.Thread(target=validate, args=(proxy,))
+        t.start()
+        threads.append(t)
+        if len(threads) >= 30:
+            for t in threads:
+                t.join()
+            threads = []
+    for t in threads:
+        t.join()
 
     with proxy_lock:
-        proxy_pool[:] = valid_proxies
+        proxy_pool = valid_proxies
         proxy_usage.clear()
 
-def scrape_proxies():
-    asyncio.run(scrape_proxies_async())
-
-# --- OTHER FUNCTIONS ---
+    send_telegram_message(f"✅ Proxy validation complete. Valid proxies: {len(proxy_pool)}", buttons=True)
 
 def periodic_proxy_rescrape():
     while True:
@@ -128,7 +126,7 @@ def generate_usernames(count=100):
     usernames = set()
     chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
     while len(usernames) < count:
-        length = random.choice([4,5,6])
+        length = random.choice([4, 5, 6])
         name = ''.join(random.choice(chars) for _ in range(length))
         usernames.add(name)
     return list(usernames)
@@ -194,14 +192,10 @@ def handle_telegram_updates():
             print(f"[ERROR] Telegram polling: {e}")
         time.sleep(2)
 
-# --- MAIN ---
-
 if __name__ == "__main__":
     scrape_proxies()
     threading.Thread(target=periodic_proxy_rescrape, daemon=True).start()
     threading.Thread(target=checker_loop, daemon=True).start()
     threading.Thread(target=handle_telegram_updates, daemon=True).start()
-    send_telegram_message("Bot online ✅\nUse buttons below to control:", buttons=True)
 
-    while True:
-        time.sleep(5)
+    send_telegram_message("Bot online ✅\nWaiting for proxy validation to complete...")
