@@ -4,6 +4,8 @@ import time
 import random
 import re
 import json
+import asyncio
+import aiohttp
 
 # Telegram Bot info
 TELEGRAM_BOT_TOKEN = '7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A'
@@ -43,8 +45,9 @@ def send_telegram_message(message, buttons=False):
     except Exception as e:
         print(f"[Telegram error] {e}")
 
-def scrape_proxies():
-    global proxy_pool, proxy_usage
+# --- ASYNC PROXY SCRAPER AND VALIDATOR ---
+
+async def fetch_proxies():
     print("[INFO] Scraping proxies...")
     sources = [
         "https://www.proxy-list.download/api/v1/get?type=http",
@@ -55,48 +58,56 @@ def scrape_proxies():
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
     ]
-    new_proxies = set()
-    for url in sources:
-        try:
-            resp = requests.get(url, timeout=10)
-            text = resp.text
+
+    proxies = set()
+
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for url in sources:
+            tasks.append(fetch_proxy_list(session, url, proxies))
+        await asyncio.gather(*tasks)
+
+    return list(proxies)
+
+async def fetch_proxy_list(session, url, proxies):
+    try:
+        async with session.get(url, timeout=10) as resp:
+            text = await resp.text()
             found = re.findall(r'(\d{1,3}(?:\.\d{1,3}){3}:\d+)', text)
             for proxy in found:
-                new_proxies.add(f"http://{proxy}")
-        except:
-            pass
-        time.sleep(2)
+                proxies.add(f"http://{proxy}")
+    except:
+        pass
 
-    print(f"[INFO] Validating {len(new_proxies)} proxies...")
+async def validate_proxy(session, proxy, valid_proxies):
+    try:
+        headers = {'User-Agent': random.choice(HEADERS_LIST)}
+        async with session.get("https://www.tiktok.com", proxy=proxy, headers=headers, timeout=2.5) as resp:
+            if resp.status == 200:
+                valid_proxies.append(proxy)
+    except:
+        pass
+
+async def scrape_proxies_async():
+    all_proxies = await fetch_proxies()
+    print(f"[INFO] Validating {len(all_proxies)} proxies...")
+
     valid_proxies = []
-    lock = threading.Lock()
-
-    def validate(proxy):
-        try:
-            headers = {'User-Agent': random.choice(HEADERS_LIST)}
-            r = requests.get("https://www.tiktok.com", proxies={"http": proxy, "https": proxy}, headers=headers, timeout=2.5)  # timeout lowered here
-            if r.status_code == 200:
-                with lock:
-                    valid_proxies.append(proxy)
-        except:
-            pass
-
-    threads = []
-    max_threads = 30  # lowered from 50
-    for proxy in new_proxies:
-        t = threading.Thread(target=validate, args=(proxy,))
-        t.start()
-        threads.append(t)
-        if len(threads) >= max_threads:
-            for t in threads:
-                t.join()
-            threads = []
-    for t in threads:
-        t.join()
+    connector = aiohttp.TCPConnector(limit=30)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = []
+        for proxy in all_proxies:
+            tasks.append(validate_proxy(session, proxy, valid_proxies))
+        await asyncio.gather(*tasks)
 
     with proxy_lock:
-        proxy_pool = valid_proxies
+        proxy_pool[:] = valid_proxies
         proxy_usage.clear()
+
+def scrape_proxies():
+    asyncio.run(scrape_proxies_async())
+
+# --- OTHER FUNCTIONS ---
 
 def periodic_proxy_rescrape():
     while True:
@@ -182,12 +193,13 @@ def handle_telegram_updates():
             print(f"[ERROR] Telegram polling: {e}")
         time.sleep(2)
 
+# --- MAIN ---
+
 if __name__ == "__main__":
     scrape_proxies()
     threading.Thread(target=periodic_proxy_rescrape, daemon=True).start()
     threading.Thread(target=checker_loop, daemon=True).start()
     threading.Thread(target=handle_telegram_updates, daemon=True).start()
-
     send_telegram_message("Bot online ✅\nUse buttons below to control:", buttons=True)
 
     while True:
