@@ -6,7 +6,7 @@ import re
 import json
 import os
 
-# Telegram Bot info
+# Telegram Bot info from environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -22,6 +22,12 @@ proxy_usage = {}
 proxy_lock = threading.Lock()
 MAX_THREADS = 30
 running = False
+
+# For batching Telegram messages of available usernames
+available_buffer = []
+available_buffer_lock = threading.Lock()
+BATCH_SIZE = 5
+BATCH_INTERVAL = 15  # seconds
 
 def send_telegram_message(message, buttons=False):
     url = f"{TELEGRAM_API}/sendMessage"
@@ -95,7 +101,7 @@ def scrape_proxies():
         t = threading.Thread(target=validate, args=(proxy,))
         t.start()
         threads.append(t)
-        if len(threads) >= 30:
+        if len(threads) >= MAX_THREADS:
             for t in threads:
                 t.join()
             threads = []
@@ -117,6 +123,7 @@ def get_proxy():
     with proxy_lock:
         if not proxy_pool:
             return None
+        # pick proxy with least usage count for load balancing
         sorted_proxies = sorted(proxy_pool, key=lambda p: proxy_usage.get(p, 0))
         proxy = sorted_proxies[0]
         proxy_usage[proxy] = proxy_usage.get(proxy, 0) + 1
@@ -140,9 +147,28 @@ def check_username(username):
     try:
         r = requests.get(url, headers=headers, proxies={"http": proxy, "https": proxy}, timeout=10)
         if r.status_code == 404:
-            send_telegram_message(f"✅ Available: *{username}*\nhttps://www.tiktok.com/@{username}")
+            # Save available username to file
+            with open("available.txt", "a") as f:
+                f.write(username + "\n")
+
+            # Buffer available username to batch Telegram alerts
+            with available_buffer_lock:
+                available_buffer.append(username)
     except:
         pass
+
+def telegram_batch_sender():
+    while True:
+        time.sleep(BATCH_INTERVAL)
+        with available_buffer_lock:
+            if not available_buffer:
+                continue
+            batch = available_buffer[:BATCH_SIZE]
+            del available_buffer[:BATCH_SIZE]
+
+        if batch:
+            message = "✅ Available usernames:\n" + "\n".join([f"*{u}*  [Link](https://www.tiktok.com/@{u})" for u in batch])
+            send_telegram_message(message)
 
 def checker_loop():
     global running
@@ -193,9 +219,16 @@ def handle_telegram_updates():
         time.sleep(2)
 
 if __name__ == "__main__":
+    # Initial message and start scraping proxies
+    send_telegram_message("Bot online ✅\nStarting proxy scraping and validation...")
     scrape_proxies()
+
+    # Start background threads
     threading.Thread(target=periodic_proxy_rescrape, daemon=True).start()
     threading.Thread(target=checker_loop, daemon=True).start()
     threading.Thread(target=handle_telegram_updates, daemon=True).start()
+    threading.Thread(target=telegram_batch_sender, daemon=True).start()
 
-    send_telegram_message("Bot online ✅\nWaiting for proxy validation to complete...")
+    # Main thread loop just sleeps forever
+    while True:
+        time.sleep(60)
