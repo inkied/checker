@@ -22,13 +22,14 @@ proxy_lock = threading.Lock()
 MAX_THREADS = 20
 running = False
 
-def send_telegram_message(message, buttons=False, callback_query_id=None):
+def send_telegram_message(message, buttons=False):
     url = f"{TELEGRAM_API}/sendMessage"
     payload = {
         'chat_id': TELEGRAM_CHAT_ID,
         'text': message,
         'parse_mode': 'Markdown'
     }
+
     if buttons:
         payload['reply_markup'] = json.dumps({
             'inline_keyboard': [[
@@ -38,17 +39,9 @@ def send_telegram_message(message, buttons=False, callback_query_id=None):
         })
 
     try:
-        resp = requests.post(url, data=payload, timeout=10)
-        resp.raise_for_status()
+        requests.post(url, data=payload, timeout=10)
     except Exception as e:
         print(f"[Telegram error] {e}")
-
-    # If this was a callback query, answer it so Telegram knows we received it
-    if callback_query_id:
-        try:
-            requests.post(f"{TELEGRAM_API}/answerCallbackQuery", data={'callback_query_id': callback_query_id})
-        except Exception as e:
-            print(f"[Telegram callback error] {e}")
 
 def scrape_proxies():
     global proxy_pool, proxy_usage
@@ -81,7 +74,7 @@ def scrape_proxies():
     def validate(proxy):
         try:
             headers = {'User-Agent': random.choice(HEADERS_LIST)}
-            r = requests.get("https://www.tiktok.com", proxies={"http": proxy, "https": proxy}, headers=headers, timeout=5)
+            r = requests.get("https://www.tiktok.com", proxies={"http": proxy, "https": proxy}, headers=headers, timeout=2.5)  # timeout lowered here
             if r.status_code == 200:
                 with lock:
                     valid_proxies.append(proxy)
@@ -89,11 +82,12 @@ def scrape_proxies():
             pass
 
     threads = []
+    max_threads = 30  # lowered from 50
     for proxy in new_proxies:
         t = threading.Thread(target=validate, args=(proxy,))
         t.start()
         threads.append(t)
-        if len(threads) >= 50:
+        if len(threads) >= max_threads:
             for t in threads:
                 t.join()
             threads = []
@@ -103,7 +97,6 @@ def scrape_proxies():
     with proxy_lock:
         proxy_pool = valid_proxies
         proxy_usage.clear()
-    print(f"[INFO] {len(valid_proxies)} proxies are valid and ready.")
 
 def periodic_proxy_rescrape():
     while True:
@@ -167,29 +160,24 @@ def handle_telegram_updates():
     while True:
         try:
             resp = requests.get(f"{TELEGRAM_API}/getUpdates", timeout=10)
-            updates = resp.json().get("result", [])
+            updates = resp.json()["result"]
             for update in updates:
                 update_id = update["update_id"]
                 if last_update_id and update_id <= last_update_id:
                     continue
                 last_update_id = update_id
 
-                # Handle callback query (button presses)
                 if "callback_query" in update:
                     data = update["callback_query"]["data"]
-                    callback_id = update["callback_query"]["id"]
                     if data == "start":
                         if not running:
                             running = True
-                            send_telegram_message("🟢 Checker started.", callback_query_id=callback_id)
+                            send_telegram_message("🟢 Checker started.")
                         else:
-                            send_telegram_message("✅ Already running.", callback_query_id=callback_id)
+                            send_telegram_message("Already running.")
                     elif data == "stop":
-                        if running:
-                            running = False
-                            send_telegram_message("🔴 Checker stopped.", callback_query_id=callback_id)
-                        else:
-                            send_telegram_message("ℹ️ Already stopped.", callback_query_id=callback_id)
+                        running = False
+                        send_telegram_message("🔴 Checker stopped.")
         except Exception as e:
             print(f"[ERROR] Telegram polling: {e}")
         time.sleep(2)
