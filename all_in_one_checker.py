@@ -8,7 +8,7 @@ import json
 # Telegram Bot info
 TELEGRAM_BOT_TOKEN = '7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A'
 TELEGRAM_CHAT_ID = '7755395640'
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+TELEGRAM_API = f"https://api.telegram.org/bot7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A"
 
 HEADERS_LIST = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64)...',
