@@ -22,14 +22,13 @@ proxy_lock = threading.Lock()
 MAX_THREADS = 20
 running = False
 
-def send_telegram_message(message, buttons=False):
+def send_telegram_message(message, buttons=False, callback_query_id=None):
     url = f"{TELEGRAM_API}/sendMessage"
     payload = {
         'chat_id': TELEGRAM_CHAT_ID,
         'text': message,
         'parse_mode': 'Markdown'
     }
-
     if buttons:
         payload['reply_markup'] = json.dumps({
             'inline_keyboard': [[
@@ -39,9 +38,17 @@ def send_telegram_message(message, buttons=False):
         })
 
     try:
-        requests.post(url, data=payload, timeout=10)
+        resp = requests.post(url, data=payload, timeout=10)
+        resp.raise_for_status()
     except Exception as e:
         print(f"[Telegram error] {e}")
+
+    # If this was a callback query, answer it so Telegram knows we received it
+    if callback_query_id:
+        try:
+            requests.post(f"{TELEGRAM_API}/answerCallbackQuery", data={'callback_query_id': callback_query_id})
+        except Exception as e:
+            print(f"[Telegram callback error] {e}")
 
 def scrape_proxies():
     global proxy_pool, proxy_usage
@@ -96,6 +103,7 @@ def scrape_proxies():
     with proxy_lock:
         proxy_pool = valid_proxies
         proxy_usage.clear()
+    print(f"[INFO] {len(valid_proxies)} proxies are valid and ready.")
 
 def periodic_proxy_rescrape():
     while True:
@@ -159,24 +167,29 @@ def handle_telegram_updates():
     while True:
         try:
             resp = requests.get(f"{TELEGRAM_API}/getUpdates", timeout=10)
-            updates = resp.json()["result"]
+            updates = resp.json().get("result", [])
             for update in updates:
                 update_id = update["update_id"]
                 if last_update_id and update_id <= last_update_id:
                     continue
                 last_update_id = update_id
 
+                # Handle callback query (button presses)
                 if "callback_query" in update:
                     data = update["callback_query"]["data"]
+                    callback_id = update["callback_query"]["id"]
                     if data == "start":
                         if not running:
                             running = True
-                            send_telegram_message("🟢 Checker started.")
+                            send_telegram_message("🟢 Checker started.", callback_query_id=callback_id)
                         else:
-                            send_telegram_message("Already running.")
+                            send_telegram_message("✅ Already running.", callback_query_id=callback_id)
                     elif data == "stop":
-                        running = False
-                        send_telegram_message("🔴 Checker stopped.")
+                        if running:
+                            running = False
+                            send_telegram_message("🔴 Checker stopped.", callback_query_id=callback_id)
+                        else:
+                            send_telegram_message("ℹ️ Already stopped.", callback_query_id=callback_id)
         except Exception as e:
             print(f"[ERROR] Telegram polling: {e}")
         time.sleep(2)
