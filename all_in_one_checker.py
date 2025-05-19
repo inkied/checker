@@ -9,9 +9,9 @@ import asyncio
 import aiohttp
 
 # Telegram Bot info
-TELEGRAM_BOT_TOKEN = '7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A'
-TELEGRAM_CHAT_ID = '7755395640'
-TELEGRAM_API = f"https://api.telegram.org/bot7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A"
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 HEADERS_LIST = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64)...',
