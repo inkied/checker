@@ -69,7 +69,7 @@ def scrape_proxies():
         time.sleep(2)
 
     total = len(new_proxies)
-    send_telegram_message(f"Validating {total} proxies...")
+    send_telegram_message(f"Validating {total} proxies")
 
     print(f"[INFO] Validating {total} proxies...")
     valid_proxies = []
@@ -88,7 +88,7 @@ def scrape_proxies():
         with lock:
             counter[0] += 1
             if counter[0] % 100 == 0 or counter[0] == total:
-                send_telegram_message(f"Validated {counter[0]} of {total} proxies...")
+                send_telegram_message(f"Validated {counter[0]} of {total} proxies")
 
     threads = []
     for proxy in new_proxies:
@@ -107,6 +107,11 @@ def scrape_proxies():
         proxy_usage.clear()
 
     send_telegram_message(f"Proxy validation complete. Valid proxies: {len(proxy_pool)}", buttons=True)
+
+def periodic_proxy_rescrape():
+    while True:
+        time.sleep(600)
+        scrape_proxies()
 
 def get_proxy():
     with proxy_lock:
@@ -172,6 +177,23 @@ def handle_telegram_updates():
                     continue
                 last_update_id = update_id
 
+                # Handle text commands
+                if "message" in update:
+                    msg = update["message"]
+                    text = msg.get("text", "").lower()
+                    chat_id = msg["chat"]["id"]
+
+                    if text == "/start":
+                        send_telegram_message("Checker is online.\nUse the buttons below for commands.", buttons=True)
+                    elif text == "/stop":
+                        running = False
+                        send_telegram_message("Checker stopped.", buttons=True)
+                    elif text == "/proxies":
+                        with proxy_lock:
+                            count = len(proxy_pool)
+                        send_telegram_message(f"Validated proxies: {count}")
+
+                # Handle button callbacks
                 if "callback_query" in update:
                     data = update["callback_query"]["data"]
                     if data == "start":
@@ -183,20 +205,16 @@ def handle_telegram_updates():
                     elif data == "stop":
                         running = False
                         send_telegram_message("Checker stopped.")
-                elif "message" in update and "text" in update["message"]:
-                    text = update["message"]["text"].lower()
-                    if text == "/proxies" or text == "proxies":
-                        with proxy_lock:
-                            count = len(proxy_pool)
-                        send_telegram_message(f"Valid proxies count: {count}")
-
         except Exception as e:
             print(f"[ERROR] Telegram polling: {e}")
         time.sleep(2)
 
 if __name__ == "__main__":
+    send_telegram_message("Checker is online.\nUse the buttons below for commands.", buttons=True)
     scrape_proxies()
+    threading.Thread(target=periodic_proxy_rescrape, daemon=True).start()
     threading.Thread(target=checker_loop, daemon=True).start()
     threading.Thread(target=handle_telegram_updates, daemon=True).start()
 
-    send_telegram_message("Checker is online\nUse buttons below for commands.", buttons=True)
+    while True:
+        time.sleep(10)
