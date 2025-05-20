@@ -73,6 +73,7 @@ async def answer_callback_query(session, callback_query_id):
     await session.post(f"{BOT_API_URL}/answerCallbackQuery", data={"callback_query_id": callback_query_id})
 
 def get_controller_keyboard():
+    # Buttons stacked vertically (each in its own row)
     return {"inline_keyboard": [
         [{"text": "Start", "callback_data": "start"}],
         [{"text": "Stop", "callback_data": "stop"}],
@@ -80,6 +81,7 @@ def get_controller_keyboard():
     ]}
 
 def get_claim_keyboard(username):
+    # Single "Claim" button in its own row
     return {"inline_keyboard": [[{"text": "Claim", "callback_data": f"claim_{username}"}]]}
 
 # === PROXY HANDLING ===
@@ -193,6 +195,9 @@ async def handle_telegram_update(request):
                 CHECKER_RUNNING = False
             elif action == "refresh_proxies":
                 await refresh_proxy_pool()
+            elif action.startswith("claim_"):
+                username = action.split("claim_", 1)[1]
+                await send_telegram_message(session, f"🚨 You claimed username: {username}")
     return web.Response(text="ok")
 
 # === FASTAPI SERVER ===
