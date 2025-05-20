@@ -17,7 +17,6 @@ WEBSHARE_PROXY_PASSWORD = "n0vc7b0ev31y"
 WEBSHARE_API_ENDPOINT = "https://proxy.webshare.io/api/proxy/list/"
 
 MAX_CONCURRENT = 30
-USERNAME_WORDLIST_FILE = "usernames.txt"
 AVAILABLE_USERNAMES_FILE = "available_usernames.txt"
 
 proxy_pool = set()
@@ -29,6 +28,34 @@ check_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 PROXY_AUTH_REGEX = re.compile(r"^(?:(?P<user>[^:@]+):(?P<pass>[^@]+)@)?(?P<ip>[^:]+):(?P<port>\d+)$")
+
+# === Username generation ===
+
+# Hardcoded pronounceable / brand-like 4-letter usernames (expand as needed)
+PRONOUNCEABLE_4L = [
+    "tsla", "movo", "beko", "lomo", "zino", "vexo", "kiri", "rivo",
+    "nolo", "sira", "kato", "bano", "lira", "tavo", "fino", "rako"
+]
+
+VOWELS = "aeiou"
+CONSONANTS = "bcdfghjklmnpqrstvwxyz"
+
+def generate_random_4l():
+    # Simple random pronounceable pattern: consonant + vowel + consonant + vowel
+    return "".join([
+        random.choice(CONSONANTS),
+        random.choice(VOWELS),
+        random.choice(CONSONANTS),
+        random.choice(VOWELS),
+    ])
+
+async def generate_username():
+    # Try to pop from pronounceable list first, else fallback to random
+    if PRONOUNCEABLE_4L:
+        username = PRONOUNCEABLE_4L.pop(random.randint(0, len(PRONOUNCEABLE_4L) - 1))
+        return username
+    else:
+        return generate_random_4l()
 
 # === FUNCTIONS ===
 
@@ -137,7 +164,8 @@ async def check_username_availability(username, proxy):
             url = f"https://www.tiktok.com/@{username}"
             async with session.get(url) as resp:
                 return resp.status == 404
-    except:
+    except Exception as e:
+        print(f"[DEBUG] Username check failed for {username} with proxy {proxy} | Error: {e}")
         return False
 
 async def checker_worker():
@@ -146,8 +174,10 @@ async def checker_worker():
         async with check_semaphore:
             proxy = random.choice(list(proxy_pool)) if proxy_pool else None
             if not proxy:
-                username_queue.put_nowait(username)
+                # No proxies right now, requeue username and wait a bit
+                await username_queue.put(username)
                 await asyncio.sleep(5)
+                username_queue.task_done()
                 continue
 
             available = await check_username_availability(username, proxy)
@@ -159,15 +189,12 @@ async def checker_worker():
         username_queue.task_done()
         await asyncio.sleep(0.1)
 
-async def load_usernames():
-    try:
-        with open(USERNAME_WORDLIST_FILE, "r") as f:
-            for line in f:
-                username = line.strip()
-                if username:
-                    await username_queue.put(username)
-    except FileNotFoundError:
-        print(f"Wordlist file '{USERNAME_WORDLIST_FILE}' not found.")
+async def username_feeder():
+    while not stop_event.is_set():
+        # Keep generating and enqueueing usernames as long as stopped is False
+        username = await generate_username()
+        await username_queue.put(username)
+        await asyncio.sleep(0.05)  # small delay to avoid queue spam
 
 async def telegram_bot_handler():
     offset = None
@@ -200,12 +227,15 @@ async def telegram_bot_handler():
         await asyncio.sleep(1)
 
 async def run_checker():
-    await load_usernames()
+    # Start the proxy refresher, username feeder, and checker workers
     proxy_task = asyncio.create_task(refresh_proxy_pool())
+    feeder_task = asyncio.create_task(username_feeder())
     workers = [asyncio.create_task(checker_worker()) for _ in range(MAX_CONCURRENT)]
-    await username_queue.join()
+
+    await username_queue.join()  # Wait until the queue is empty (which is unlikely here, runs forever)
     stop_event.set()
     proxy_task.cancel()
+    feeder_task.cancel()
     for w in workers:
         w.cancel()
 
@@ -216,5 +246,3 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Exiting...")
