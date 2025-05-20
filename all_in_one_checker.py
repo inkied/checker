@@ -6,55 +6,40 @@ import json
 import string
 from fastapi import FastAPI, Request
 import uvicorn
-import logging
 
-logging.basicConfig(level=logging.INFO)
 app = FastAPI()
 
+# Your tokens here:
 TELEGRAM_TOKEN = "7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A"
 TELEGRAM_CHAT_ID = "7755395640"
 WEBSHARE_API_KEY = "cmaqd2pxyf6h1bl93ozf7z12mm2efjsvbd7w366z"
+
 PROXIES_FILE = "proxies.txt"
-
-if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_TOKEN is missing or invalid.")
-
-if not TELEGRAM_CHAT_ID:
-    raise ValueError("TELEGRAM_CHAT_ID is missing or invalid.")
-
-if not WEBSHARE_API_KEY:
-    raise ValueError("WEBSHARE_API_KEY is missing.")
 
 BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 CHECKER_RUNNING = False
 PROXIES = []
 controller_message_id = None
-CHECKER_SEMAPHORE = asyncio.Semaphore(10)  # concurrency limit
 
+# Consonants and vowels to make pronounceable combos like "tsla"
+CONSONANTS = "bcdfghjklmnpqrstvwxyz"
+VOWELS = "aeiou"
 
-def generate_semi_og_username():
-    # Semi-OG style 4-letter usernames with consonant-vowel-consonant-vowel or similar patterns
-    consonants = "bcdfghjklmnpqrstvwxyz"
-    vowels = "aeiou"
-    patterns = [
-        lambda: random.choice(consonants) + random.choice(vowels) + random.choice(consonants) + random.choice(vowels),
-        lambda: random.choice(vowels) + random.choice(consonants) + random.choice(vowels) + random.choice(consonants),
-        lambda: random.choice(consonants) * 2 + random.choice(vowels) * 2,
-        lambda: random.choice(vowels) * 2 + random.choice(consonants) * 2,
-        lambda: random.choice(consonants) + random.choice(consonants) + random.choice(vowels) + random.choice(consonants)
-    ]
-    return random.choice(patterns)()
-
+def generate_pronounceable_4l():
+    # Pattern: Consonant + Vowel + Consonant + Consonant (like tsla, mlsk)
+    c1 = random.choice(CONSONANTS)
+    v1 = random.choice(VOWELS)
+    c2 = random.choice(CONSONANTS)
+    c3 = random.choice(CONSONANTS)
+    return f"{c1}{v1}{c2}{c3}"
 
 def load_usernames():
     try:
         with open("usernames.txt", "r") as f:
             return [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        logging.warning("usernames.txt not found, will use generator.")
         return []
-
 
 def load_cached_proxies():
     global PROXIES
@@ -62,20 +47,18 @@ def load_cached_proxies():
         with open(PROXIES_FILE, "r") as f:
             lines = [line.strip() for line in f if line.strip()]
         PROXIES = lines[:100]
-        logging.info(f"Loaded {len(PROXIES)} cached proxies (max 100).")
+        print(f"Loaded {len(PROXIES)} cached proxies (max 100).")
     else:
         PROXIES = []
-        logging.info("No cached proxies file found.")
-
+        print("No cached proxies file found.")
 
 async def validate_proxy(proxy):
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get("https://www.tiktok.com", proxy=proxy, timeout=8) as r:
                 return r.status == 200
-    except Exception:
+    except:
         return False
-
 
 async def send_message(text, buttons=None):
     payload = {
@@ -86,11 +69,7 @@ async def send_message(text, buttons=None):
     if buttons:
         payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
     async with aiohttp.ClientSession() as session:
-        try:
-            await session.post(f"{BOT_API_URL}/sendMessage", json=payload)
-        except Exception as e:
-            logging.error(f"send_message error: {e}")
-
+        await session.post(f"{BOT_API_URL}/sendMessage", json=payload)
 
 async def edit_message(message_id, text, buttons=None):
     payload = {
@@ -102,16 +81,11 @@ async def edit_message(message_id, text, buttons=None):
     if buttons:
         payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
     async with aiohttp.ClientSession() as session:
-        try:
-            await session.post(f"{BOT_API_URL}/editMessageText", json=payload)
-        except Exception as e:
-            logging.error(f"edit_message error: {e}")
-
+        await session.post(f"{BOT_API_URL}/editMessageText", json=payload)
 
 async def send_available_username(username):
     buttons = [[{"text": "Claim", "url": f"https://www.tiktok.com/@{username}"}]]
-    await send_message(f"<b>@{username}</b> is available.", buttons)
-
+    await send_message(f"<b>@{username}</b> is available!", buttons)
 
 async def check_username(session, username, proxy):
     url = f"https://www.tiktok.com/@{username}"
@@ -124,19 +98,13 @@ async def check_username(session, username, proxy):
     }
     try:
         async with session.get(url, proxy=proxy, headers=headers, timeout=10) as resp:
-            if resp.status == 404:
-                return True  # Available
-            elif resp.status == 200:
-                return False  # Taken
-            else:
-                return None  # Unknown, maybe proxy error
-    except Exception:
+            return resp.status == 404
+    except:
         return None
-
 
 async def refresh_proxies():
     global PROXIES
-    logging.info("Fetching proxies from Webshare...")
+    print("Fetching proxies from Webshare...")
     await send_message("Starting proxy refresh and validation...")
 
     headers = {"Authorization": f"Token {WEBSHARE_API_KEY}"}
@@ -144,7 +112,7 @@ async def refresh_proxies():
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=15) as resp:
+            async with session.get(url, headers=headers, timeout=10) as resp:
                 data = await resp.json()
                 proxies_raw = data.get("results", [])
 
@@ -156,7 +124,7 @@ async def refresh_proxies():
             f"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}"
             for p in proxies_raw
         ]
-        logging.info(f"Pulled {len(raw_proxies)} raw proxies")
+        print(f"Pulled {len(raw_proxies)} raw proxies")
 
         valid_proxies = []
         semaphore = asyncio.Semaphore(20)
@@ -178,14 +146,13 @@ async def refresh_proxies():
                 f.write(proxy + "\n")
 
         await send_message(f"Validated and saved {len(PROXIES)} proxies.")
-        logging.info(f"Validated and saved {len(PROXIES)} proxies.")
+        print(f"Validated and saved {len(PROXIES)} proxies.")
         if len(PROXIES) < 50:
-            logging.warning("Warning: Less than 50 valid proxies found.")
+            print("Warning: Less than 50 valid proxies found.")
 
     except Exception as e:
-        logging.error(f"Proxy fetch/validation error: {e}")
+        print(f"Proxy fetch/validation error: {e}")
         await send_message(f"Proxy fetch/validation error: {e}")
-
 
 async def run_checker_loop():
     global CHECKER_RUNNING
@@ -197,7 +164,7 @@ async def run_checker_loop():
     async with aiohttp.ClientSession() as session:
         while CHECKER_RUNNING:
             if not usernames:
-                username = generate_semi_og_username()
+                username = generate_pronounceable_4l()
             else:
                 username = usernames.pop(0)
 
@@ -211,30 +178,24 @@ async def run_checker_loop():
                     break
 
             proxy = proxy_pool[proxy_index % len(proxy_pool)]
-
-            async with CHECKER_SEMAPHORE:
-                result = await check_username(session, username, proxy)
+            result = await check_username(session, username, proxy)
 
             if result is True:
                 await send_available_username(username)
             elif result is None:
-                # Remove bad proxy to reduce retries
-                if proxy in proxy_pool:
-                    proxy_pool.remove(proxy)
-                    logging.info(f"Removed invalid proxy: {proxy}")
+                proxy_pool.remove(proxy)
 
             proxy_index += 1
-            await asyncio.sleep(random.uniform(0.4, 1.2))
-
+            await asyncio.sleep(random.uniform(0.4, 1.0))
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     global CHECKER_RUNNING, controller_message_id
 
     data = await request.json()
-
-    # Handle normal messages
     message = data.get("message", {})
+    callback = data.get("callback_query", {})
+
     if "text" in message:
         text = message["text"]
         if text == "/start":
@@ -246,8 +207,6 @@ async def telegram_webhook(request: Request):
             await send_message("Checker Controls:", buttons)
         return {"ok": True}
 
-    # Handle callback queries (inline buttons)
-    callback = data.get("callback_query", {})
     if "data" in callback:
         action = callback["data"]
         message_id = callback["message"]["message_id"]
@@ -271,13 +230,13 @@ async def telegram_webhook(request: Request):
             ])
     return {"ok": True}
 
-
 if __name__ == "__main__":
     load_cached_proxies()
     asyncio.run(refresh_proxies())
+
     if not PROXIES:
-        logging.warning("No valid proxies available after refresh. Use 'Refresh Proxies' in Telegram.")
+        print("No valid proxies available after refresh. Use 'Refresh Proxies' in Telegram.")
     else:
-        logging.info(f"Loaded {len(PROXIES)} valid proxies after refresh.")
+        print(f"Loaded {len(PROXIES)} valid proxies after refresh.")
 
     uvicorn.run(app, host="0.0.0.0", port=8080)
