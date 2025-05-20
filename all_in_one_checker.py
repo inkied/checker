@@ -235,7 +235,11 @@ async def telegram_webhook(request: Request):
 # === Startup ===
 
 if __name__ == "__main__":
-    load_cached_proxies()
+    asyncio.run(refresh_proxies())  # <--- Force proxy refresh before anything else
+
     if not PROXIES:
-        print("No cached proxies found. Use 'Refresh Proxies' in Telegram to fetch new proxies.")
+        print("No valid proxies available after refresh. Use 'Refresh Proxies' in Telegram.")
+    else:
+        print(f"Loaded {len(PROXIES)} valid proxies after refresh.")
+
     uvicorn.run(app, host="0.0.0.0", port=8080)
