@@ -1,3 +1,4 @@
+import os
 import asyncio
 import aiohttp
 import time
@@ -6,17 +7,23 @@ import json
 from aiohttp_socks import ProxyConnector, ProxyType
 import re
 
-# === CONFIG ===
-TELEGRAM_BOT_TOKEN = "7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A"
-TELEGRAM_CHAT_ID = "7755395640"
+# === CONFIG from environment variables ===
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+WEBSHARE_API_KEY = os.getenv("WEBSHARE_API_KEY")
+WEBSHARE_PROXY_USERNAME = os.getenv("WEBSHARE_PROXY_USERNAME")
+WEBSHARE_PROXY_PASSWORD = os.getenv("WEBSHARE_PROXY_PASSWORD")
 
-# Webshare API details
-WEBSHARE_API_KEY = "cmaqd2pxyf6h1bl93ozf7z12mm2efjsvbd7w366z"
-WEBSHARE_PROXY_USERNAME = "trdwseke-rotate"
-WEBSHARE_PROXY_PASSWORD = "n0vc7b0ev31y"
+print("Loaded TELEGRAM_BOT_TOKEN:", TELEGRAM_BOT_TOKEN is not None)
+print("Loaded TELEGRAM_CHAT_ID:", TELEGRAM_CHAT_ID is not None)
+print("Loaded WEBSHARE_API_KEY:", WEBSHARE_API_KEY is not None)
+print("Loaded WEBSHARE_PROXY_USERNAME:", WEBSHARE_PROXY_USERNAME is not None)
+print("Loaded WEBSHARE_PROXY_PASSWORD:", WEBSHARE_PROXY_PASSWORD is not None)
+
 WEBSHARE_API_ENDPOINT = "https://proxy.webshare.io/api/proxy/list/"
 
 MAX_CONCURRENT = 30
+USERNAME_WORDLIST_FILE = "usernames.txt"
 AVAILABLE_USERNAMES_FILE = "available_usernames.txt"
 
 proxy_pool = set()
@@ -28,34 +35,6 @@ check_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 PROXY_AUTH_REGEX = re.compile(r"^(?:(?P<user>[^:@]+):(?P<pass>[^@]+)@)?(?P<ip>[^:]+):(?P<port>\d+)$")
-
-# === Username generation ===
-
-# Hardcoded pronounceable / brand-like 4-letter usernames (expand as needed)
-PRONOUNCEABLE_4L = [
-    "tsla", "movo", "beko", "lomo", "zino", "vexo", "kiri", "rivo",
-    "nolo", "sira", "kato", "bano", "lira", "tavo", "fino", "rako"
-]
-
-VOWELS = "aeiou"
-CONSONANTS = "bcdfghjklmnpqrstvwxyz"
-
-def generate_random_4l():
-    # Simple random pronounceable pattern: consonant + vowel + consonant + vowel
-    return "".join([
-        random.choice(CONSONANTS),
-        random.choice(VOWELS),
-        random.choice(CONSONANTS),
-        random.choice(VOWELS),
-    ])
-
-async def generate_username():
-    # Try to pop from pronounceable list first, else fallback to random
-    if PRONOUNCEABLE_4L:
-        username = PRONOUNCEABLE_4L.pop(random.randint(0, len(PRONOUNCEABLE_4L) - 1))
-        return username
-    else:
-        return generate_random_4l()
 
 # === FUNCTIONS ===
 
@@ -174,10 +153,8 @@ async def checker_worker():
         async with check_semaphore:
             proxy = random.choice(list(proxy_pool)) if proxy_pool else None
             if not proxy:
-                # No proxies right now, requeue username and wait a bit
-                await username_queue.put(username)
+                username_queue.put_nowait(username)
                 await asyncio.sleep(5)
-                username_queue.task_done()
                 continue
 
             available = await check_username_availability(username, proxy)
@@ -189,12 +166,15 @@ async def checker_worker():
         username_queue.task_done()
         await asyncio.sleep(0.1)
 
-async def username_feeder():
-    while not stop_event.is_set():
-        # Keep generating and enqueueing usernames as long as stopped is False
-        username = await generate_username()
-        await username_queue.put(username)
-        await asyncio.sleep(0.05)  # small delay to avoid queue spam
+async def load_usernames():
+    try:
+        with open(USERNAME_WORDLIST_FILE, "r") as f:
+            for line in f:
+                username = line.strip()
+                if username:
+                    await username_queue.put(username)
+    except FileNotFoundError:
+        print(f"Wordlist file '{USERNAME_WORDLIST_FILE}' not found.")
 
 async def telegram_bot_handler():
     offset = None
@@ -227,15 +207,12 @@ async def telegram_bot_handler():
         await asyncio.sleep(1)
 
 async def run_checker():
-    # Start the proxy refresher, username feeder, and checker workers
+    await load_usernames()
     proxy_task = asyncio.create_task(refresh_proxy_pool())
-    feeder_task = asyncio.create_task(username_feeder())
     workers = [asyncio.create_task(checker_worker()) for _ in range(MAX_CONCURRENT)]
-
-    await username_queue.join()  # Wait until the queue is empty (which is unlikely here, runs forever)
+    await username_queue.join()
     stop_event.set()
     proxy_task.cancel()
-    feeder_task.cancel()
     for w in workers:
         w.cancel()
 
@@ -246,3 +223,5 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Exiting...")
