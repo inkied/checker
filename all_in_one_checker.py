@@ -11,9 +11,19 @@ import uvicorn
 
 app = FastAPI()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7755395640")
-WEBSHARE_API_KEY = os.getenv("WEBSHARE_API_KEY")
+TELEGRAM_TOKEN = "7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A"
+TELEGRAM_CHAT_ID = "7755395640"  # Set directly, no os.getenv fallback needed here
+WEBSHARE_API_KEY = "cmaqd2pxyf6h1bl93ozf7z12mm2efjsvbd7w366z"
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN is missing or invalid.")
+
+if not TELEGRAM_CHAT_ID:
+    raise ValueError("TELEGRAM_CHAT_ID is missing or invalid.")
+
+if not WEBSHARE_API_KEY:
+    raise ValueError("WEBSHARE_API_KEY is missing. Please set it as an environment variable.")
+
 BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 CHECKER_RUNNING = False
