@@ -10,7 +10,6 @@ TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 HEADERS_LIST = [
-    # Add your User-Agent strings here
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64)...',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)...',
     'Mozilla/5.0 (X11; Ubuntu; Linux x86_64)...'
@@ -198,7 +197,6 @@ async def handle_telegram_updates():
                                 await send_telegram_message(session, msg_text, buttons=True)
                             elif data == 'rescrape':
                                 await send_telegram_message(session, "Starting proxy rescrape and validation. This may take a moment...")
-                                # Run scrape_proxies without blocking
                                 asyncio.create_task(scrape_proxies(session))
             except Exception as e:
                 print(f"[ERROR] Telegram polling: {e}")
@@ -211,14 +209,19 @@ async def periodic_proxy_rescrape(session):
         await scrape_proxies(session)
 
 async def main():
-    print("✅ New version deployed and running on Railway")  # <--- Added here
+    print("✅ New version deployed and running on Railway")
     async with aiohttp.ClientSession() as session:
         await send_telegram_message(session, "Checker is online.\nUse the buttons below for commands.", buttons=True)
         await scrape_proxies(session)
-        # Launch background tasks
+
+        # Start all background tasks
         asyncio.create_task(periodic_proxy_rescrape(session))
         asyncio.create_task(checker_loop())
-        await handle_telegram_updates()
+        asyncio.create_task(handle_telegram_updates())
+
+        # Keep main alive
+        while True:
+            await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())
