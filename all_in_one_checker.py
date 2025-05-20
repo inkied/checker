@@ -2,27 +2,20 @@ import asyncio
 import aiohttp
 import random
 import string
-import re
 import os
 
 # === CONFIGURATION ===
 
-# Telegram bot config (put your real tokens here or env vars)
 TELEGRAM_API_TOKEN = os.getenv("TELEGRAM_API_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
-
-# Webshare API key for proxy scraping
 WEBSHARE_API_KEY = os.getenv("WEBSHARE_API_KEY", "YOUR_WEBSHARE_API_KEY")
 
-# Proxy pool and concurrency
-PROXY_POOL = []
 MAX_CONCURRENT_CHECKS = 40
-
-# Username source file fallback (optional)
 USERNAME_WORDLIST_FILE = "usernames.txt"
 
-# Telegram batch size for messages
-TELEGRAM_BATCH_SIZE = 10
+# Global state
+PROXY_POOL = []
+CHECKER_RUNNING = False
 
 # === LIVE USERNAME GENERATION ===
 
@@ -47,7 +40,7 @@ def generate_clean_4ls_batch(batch_size=100):
                 + random.choice(string.ascii_lowercase)
                 + random.choice(vowels)
             )
-        elif pattern_type == "semi_og":
+        else:  # semi_og
             name = "".join(random.choices(string.ascii_lowercase, k=4))
 
         usernames.add(name)
@@ -64,16 +57,20 @@ async def fetch_webshare_proxies():
         while True:
             url = f"https://proxy.webshare.io/api/proxy/list/?page={page}"
             headers = {"Authorization": f"Token {WEBSHARE_API_KEY}"}
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    print(f"[DEBUG] Webshare API returned status {resp.status}, stopping scrape.")
-                    break
-                data = await resp.json()
-                page_proxies = [p.get("proxy_address") for p in data.get("results", []) if p.get("proxy_address")]
-                proxies.extend(page_proxies)
-                if not data.get("next"):
-                    break
-                page += 1
+            try:
+                async with session.get(url, headers=headers, timeout=10) as resp:
+                    if resp.status != 200:
+                        print(f"[DEBUG] Webshare API returned status {resp.status}, stopping scrape.")
+                        break
+                    data = await resp.json()
+                    page_proxies = [p.get("proxy_address") for p in data.get("results", []) if p.get("proxy_address")]
+                    proxies.extend(page_proxies)
+                    if not data.get("next"):
+                        break
+                    page += 1
+            except Exception as e:
+                print(f"[DEBUG] Exception scraping proxies: {e}")
+                break
     print(f"[DEBUG] Total scraped proxies: {len(proxies)}")
     return proxies
 
@@ -102,29 +99,45 @@ async def refresh_proxy_pool():
     PROXY_POOL = valid_proxies
     print(f"[DEBUG] Proxy pool refreshed: {len(PROXY_POOL)} valid proxies available.")
 
-# === TELEGRAM ALERTS ===
+# === TELEGRAM INTERFACE ===
 
-async def send_telegram_message(session, text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_API_TOKEN}/sendMessage"
+from aiohttp import web
+import json
+
+BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_API_TOKEN}"
+
+async def send_telegram_message(session, text, reply_markup=None):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": "Markdown",
-        "disable_web_page_preview": True
+        "disable_web_page_preview": True,
     }
-    async with session.post(url, data=payload) as resp:
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    async with session.post(f"{BOT_API_URL}/sendMessage", data=payload) as resp:
         if resp.status != 200:
             print(f"[DEBUG] Failed to send Telegram message: {await resp.text()}")
 
-async def batch_send_telegram_messages(usernames):
-    async with aiohttp.ClientSession() as session:
-        for i in range(0, len(usernames), TELEGRAM_BATCH_SIZE):
-            batch = usernames[i:i+TELEGRAM_BATCH_SIZE]
-            text = "\n".join(
-                f"[{u}](https://www.tiktok.com/@{u})"
-                for u in batch
-            )
-            await send_telegram_message(session, text)
+async def edit_telegram_message(session, message_id, text, reply_markup=None):
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True,
+    }
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    async with session.post(f"{BOT_API_URL}/editMessageText", data=payload) as resp:
+        if resp.status != 200:
+            print(f"[DEBUG] Failed to edit Telegram message: {await resp.text()}")
+
+async def answer_callback_query(session, callback_query_id):
+    payload = {"callback_query_id": callback_query_id}
+    async with session.post(f"{BOT_API_URL}/answerCallbackQuery", data=payload) as resp:
+        if resp.status != 200:
+            print(f"[DEBUG] Failed to answer callback query: {await resp.text()}")
 
 # === TIKTOK USERNAME CHECKER ===
 
@@ -139,45 +152,100 @@ async def check_username(session, username, proxy=None):
         if proxy:
             kwargs["proxy"] = f"http://{proxy}"
         async with session.get(url, **kwargs) as resp:
-            # TikTok returns 404 if username not taken (available)
+            # 404 means available username
             return resp.status == 404
     except Exception:
         return False
 
-async def main_loop():
-    global PROXY_POOL
-    # Load usernames from file fallback if exists, else generate live
-    if os.path.isfile(USERNAME_WORDLIST_FILE):
-        with open(USERNAME_WORDLIST_FILE, "r") as f:
-            usernames = [line.strip() for line in f if line.strip()]
-        print(f"[DEBUG] Loaded {len(usernames)} usernames from wordlist.")
-    else:
-        usernames = generate_clean_4ls_batch(500)
-        print(f"[DEBUG] Generated {len(usernames)} live usernames.")
+# === GLOBAL CHECKER CONTROL ===
 
-    # Refresh proxies before start
-    await refresh_proxy_pool()
+# Store message_id of the controller message with buttons to update inline keyboard
+controller_message_id = None
 
-    sem = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
-    available_usernames = []
+def get_controller_keyboard():
+    buttons = [
+        [{"text": "Start", "callback_data": "start"}],
+        [{"text": "Stop", "callback_data": "stop"}],
+        [{"text": "Refresh Proxies", "callback_data": "refresh_proxies"}],
+    ]
+    return {"inline_keyboard": buttons}
 
+def get_claim_keyboard(username):
+    # Only claim button (no skip)
+    return {"inline_keyboard": [[{"text": "Claim", "callback_data": f"claim_{username}"}]]}
+
+# === MAIN LOOP AND TELEGRAM WEBHOOK HANDLER ===
+
+async def main_checker_loop():
+    global CHECKER_RUNNING, PROXY_POOL
+    CHECKER_RUNNING = True
+
+    # Send or update control message with buttons
     async with aiohttp.ClientSession() as session:
-        async def worker(username):
-            async with sem:
-                proxy = random.choice(PROXY_POOL) if PROXY_POOL else None
-                is_available = await check_username(session, username, proxy)
-                if is_available:
-                    available_usernames.append(username)
-                    print(f"[AVAILABLE] {username}")
+        text = "Checker is online"
+        # If first time, send message and save message_id
+        global controller_message_id
+        if controller_message_id is None:
+            msg = await session.post(f"{BOT_API_URL}/sendMessage", data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "reply_markup": json.dumps(get_controller_keyboard())
+            })
+            resp_json = await msg.json()
+            if resp_json.get("ok"):
+                controller_message_id = resp_json["result"]["message_id"]
+        else:
+            await edit_telegram_message(session, controller_message_id, text, get_controller_keyboard())
 
-        tasks = [worker(username) for username in usernames]
-        await asyncio.gather(*tasks)
+        # Load usernames fallback or generate live
+        if os.path.isfile(USERNAME_WORDLIST_FILE):
+            with open(USERNAME_WORDLIST_FILE, "r") as f:
+                usernames = [line.strip() for line in f if line.strip()]
+            print(f"[DEBUG] Loaded {len(usernames)} usernames from wordlist.")
+        else:
+            usernames = generate_clean_4ls_batch(500)
+            print(f"[DEBUG] Generated {len(usernames)} live usernames.")
 
-    if available_usernames:
-        print(f"[DEBUG] Found {len(available_usernames)} available usernames. Sending Telegram alert...")
-        await batch_send_telegram_messages(available_usernames)
-    else:
-        print("[DEBUG] No available usernames found.")
+        # Refresh proxies before starting checks
+        await refresh_proxy_pool()
 
-if __name__ == "__main__":
-    asyncio.run(main_loop())
+        sem = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
+
+        async with aiohttp.ClientSession() as session:
+            async def worker(username):
+                async with sem:
+                    proxy = random.choice(PROXY_POOL) if PROXY_POOL else None
+                    is_available = await check_username(session, username, proxy)
+                    if is_available and CHECKER_RUNNING:
+                        print(f"[AVAILABLE] {username}")
+                        # Send Telegram message per user with claim button
+                        await send_telegram_message(
+                            session,
+                            f"[{username}](https://www.tiktok.com/@{username})",
+                            reply_markup=get_claim_keyboard(username)
+                        )
+
+            tasks = [worker(username) for username in usernames]
+            await asyncio.gather(*tasks)
+
+    CHECKER_RUNNING = False
+    # After done, update controller message to offline and remove buttons
+    async with aiohttp.ClientSession() as session:
+        if controller_message_id:
+            await edit_telegram_message(session, controller_message_id, "Checker is offline", reply_markup=None)
+
+async def handle_telegram_update(request):
+    global CHECKER_RUNNING
+    data = await request.json()
+
+    # Handle message or callback query
+    if "callback_query" in data:
+        callback = data["callback_query"]
+        callback_id = callback["id"]
+        data_payload = callback["data"]
+        from_user = callback["from"]["id"]
+
+        async with aiohttp.ClientSession() as session:
+            await answer_callback_query(session, callback_id)
+
+            if data_payload
