@@ -35,8 +35,7 @@ def send_telegram_message(message, buttons=False):
         payload['reply_markup'] = json.dumps({
             'inline_keyboard': [[
                 {'text': 'Start', 'callback_data': 'start'},
-                {'text': 'Stop', 'callback_data': 'stop'},
-                {'text': 'Proxies', 'callback_data': 'proxies'}
+                {'text': 'Stop', 'callback_data': 'stop'}
             ]]
         })
 
@@ -109,11 +108,6 @@ def scrape_proxies():
 
     send_telegram_message(f"Proxy validation complete. Valid proxies: {len(proxy_pool)}", buttons=True)
 
-def periodic_proxy_rescrape():
-    while True:
-        time.sleep(600)
-        scrape_proxies()
-
 def get_proxy():
     with proxy_lock:
         if not proxy_pool:
@@ -171,7 +165,7 @@ def handle_telegram_updates():
     while True:
         try:
             resp = requests.get(f"{TELEGRAM_API}/getUpdates", timeout=10)
-            updates = resp.json().get("result", [])
+            updates = resp.json()["result"]
             for update in updates:
                 update_id = update["update_id"]
                 if last_update_id and update_id <= last_update_id:
@@ -189,18 +183,20 @@ def handle_telegram_updates():
                     elif data == "stop":
                         running = False
                         send_telegram_message("Checker stopped.")
-                    elif data == "proxies":
+                elif "message" in update and "text" in update["message"]:
+                    text = update["message"]["text"].lower()
+                    if text == "/proxies" or text == "proxies":
                         with proxy_lock:
                             count = len(proxy_pool)
-                        send_telegram_message(f"Valid proxies: {count}")
+                        send_telegram_message(f"Valid proxies count: {count}")
+
         except Exception as e:
             print(f"[ERROR] Telegram polling: {e}")
         time.sleep(2)
 
 if __name__ == "__main__":
     scrape_proxies()
-    threading.Thread(target=periodic_proxy_rescrape, daemon=True).start()
     threading.Thread(target=checker_loop, daemon=True).start()
     threading.Thread(target=handle_telegram_updates, daemon=True).start()
 
-    send_telegram_message("Bot online\nWaiting for proxy validation to complete...", buttons=True)
+    send_telegram_message("Checker is online\nUse buttons below for commands.", buttons=True)
