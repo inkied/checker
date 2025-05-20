@@ -1,2 +1,2 @@
 aiohttp
-aiogram
+aiohttp_socks
