@@ -45,29 +45,46 @@ async def send_telegram_message(session, text, buttons=False):
 async def scrape_proxies(session):
     global proxy_pool, proxy_usage
     print("[INFO] Scraping proxies...")
-    sources = [
-        "https://www.proxy-list.download/api/v1/get?type=http",
-        "https://www.proxy-list.download/api/v1/get?type=https",
-        "https://www.proxy-list.download/api/v1/get?type=socks4",
-        "https://www.proxy-list.download/api/v1/get?type=socks5",
-        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
-        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
-    ]
+    sources = {
+        "http": [
+            "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+            "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+            "https://www.proxy-list.download/api/v1/get?type=http"
+        ],
+        "socks4": [
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
+            "https://www.proxy-list.download/api/v1/get?type=socks4"
+        ],
+        "socks5": [
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
+            "https://www.proxy-list.download/api/v1/get?type=socks5"
+        ]
+    }
+
     new_proxies = set()
-    for url in sources:
-        try:
-            async with session.get(url, timeout=10) as resp:
-                text = await resp.text()
-                found = re.findall(r'(\d{1,3}(?:\.\d{1,3}){3}:\d+)', text)
-                for proxy in found:
-                    new_proxies.add(f"http://{proxy}")
-        except:
-            pass
-        await asyncio.sleep(2)
+    for ptype, urls in sources.items():
+        for url in urls:
+            for attempt in range(2):  # retry each source once if it fails
+                try:
+                    async with session.get(url, timeout=10) as resp:
+                        text = await resp.text()
+                        found = re.findall(r'(\d{1,3}(?:\.\d{1,3}){3}:\d+)', text)
+                        for proxy in found:
+                            new_proxies.add(f"{ptype}://{proxy}")
+                    break  # success, stop retrying this URL
+                except:
+                    if attempt == 1:
+                        print(f"[WARN] Failed to fetch from {url}")
+                await asyncio.sleep(1)
+
+    if len(new_proxies) < 10:
+        await send_telegram_message(session, "⚠️ Warning: Low proxy count after scrape. Retrying in 5s...")
+        await asyncio.sleep(5)
+        return await scrape_proxies(session)
 
     total = len(new_proxies)
-    await send_telegram_message(session, f"Validating {total} proxies")
+    await send_telegram_message(session, f"Validating {total} proxies...")
 
     valid_proxies = []
     semaphore = asyncio.Semaphore(30)
@@ -76,21 +93,19 @@ async def scrape_proxies(session):
         async with semaphore:
             try:
                 headers = {'User-Agent': random.choice(HEADERS_LIST)}
-                proxy_url = proxy
-                async with session.get("https://www.tiktok.com", proxy=proxy_url, headers=headers, timeout=3) as r:
+                async with session.get("https://httpbin.org/ip", proxy=proxy, headers=headers, timeout=6) as r:
                     if r.status == 200:
                         valid_proxies.append(proxy)
             except:
                 pass
 
-    tasks = [validate(proxy) for proxy in new_proxies]
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*(validate(proxy) for proxy in new_proxies))
 
     async with proxy_lock:
         proxy_pool = valid_proxies
         proxy_usage.clear()
 
-    await send_telegram_message(session, f"Proxy validation complete. Valid proxies: {len(proxy_pool)}", buttons=True)
+    await send_telegram_message(session, f"✅ Proxy validation complete. Valid proxies: {len(proxy_pool)}", buttons=True)
 
 async def get_proxy():
     async with proxy_lock:
@@ -216,12 +231,4 @@ async def main():
 
         # Start all background tasks
         asyncio.create_task(periodic_proxy_rescrape(session))
-        asyncio.create_task(checker_loop())
-        asyncio.create_task(handle_telegram_updates())
-
-        # Keep main alive
-        while True:
-            await asyncio.sleep(10)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        asyncio.create_task
