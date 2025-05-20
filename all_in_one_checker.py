@@ -211,6 +211,7 @@ async def periodic_proxy_rescrape(session):
         await scrape_proxies(session)
 
 async def main():
+    print("✅ New version deployed and running on Railway")  # <--- Added here
     async with aiohttp.ClientSession() as session:
         await send_telegram_message(session, "Checker is online.\nUse the buttons below for commands.", buttons=True)
         await scrape_proxies(session)
