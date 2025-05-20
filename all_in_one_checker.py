@@ -29,8 +29,6 @@ CHECKER_RUNNING = False
 PROXIES = []
 controller_message_id = None
 
-# === Utility Functions ===
-
 def generate_username():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
 
@@ -59,20 +57,18 @@ async def validate_proxy(proxy):
     except:
         return False
 
-# === Updated Proxy Fetch + Validation ===
-
 async def refresh_proxies():
     global PROXIES
     print("Fetching proxies from Webshare...")
 
     headers = {"Authorization": f"Token {WEBSHARE_API_KEY}"}
-    url = "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page_size=1000&page=1"
+    url = "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page_size=100&page=1"
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=10) as resp:
                 data = await resp.json()
-                proxies_raw = data.get("results", [])
+                proxies_raw = data.get("results", [])[:100]  # limit to 100 proxies
 
         raw_proxies = [
             f"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}"
@@ -91,11 +87,7 @@ async def refresh_proxies():
                 if await validate_proxy(proxy):
                     valid_proxies.append(proxy)
 
-        for i in range(0, len(raw_proxies), 50):
-            if len(valid_proxies) >= 100:
-                break
-            batch = raw_proxies[i:i+50]
-            await asyncio.gather(*[validate_and_collect(p) for p in batch])
+        await asyncio.gather(*[validate_and_collect(p) for p in raw_proxies])
 
         PROXIES = valid_proxies[:100]
 
@@ -104,11 +96,11 @@ async def refresh_proxies():
                 f.write(proxy + "\n")
 
         print(f"Validated and saved {len(PROXIES)} proxies.")
+        if len(PROXIES) < 50:
+            print("Warning: Less than 50 valid proxies found.")
 
     except Exception as e:
         print(f"Proxy fetch/validation error: {e}")
-
-# === Telegram Bot Functions ===
 
 async def send_message(text, buttons=None):
     payload = {
@@ -136,8 +128,6 @@ async def edit_message(message_id, text, buttons=None):
 async def send_available_username(username):
     buttons = [[{"text": "Claim", "url": f"https://www.tiktok.com/@{username}"}]]
     await send_message(f"<b>@{username}</b> is available.", buttons)
-
-# === Checker Logic ===
 
 async def check_username(session, username, proxy):
     url = f"https://www.tiktok.com/@{username}"
@@ -188,8 +178,6 @@ async def run_checker_loop():
             proxy_index += 1
             await asyncio.sleep(random.uniform(0.4, 1.2))
 
-# === FastAPI Telegram Webhook ===
-
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     global CHECKER_RUNNING, controller_message_id
@@ -232,10 +220,8 @@ async def telegram_webhook(request: Request):
             ])
     return {"ok": True}
 
-# === Startup ===
-
 if __name__ == "__main__":
-    asyncio.run(refresh_proxies())  # <--- Force proxy refresh before anything else
+    asyncio.run(refresh_proxies())
 
     if not PROXIES:
         print("No valid proxies available after refresh. Use 'Refresh Proxies' in Telegram.")
