@@ -172,11 +172,48 @@ async def check_username(session, username, proxy):
 
 async def run_checker_loop():
     global CHECKER_RUNNING
+    print("⚙️ Starting checker loop...")
     CHECKER_RUNNING = True
     usernames = load_usernames()
     used_usernames = set()
     proxy_pool = PROXIES.copy()
     proxy_index = 0
+
+    print(f"🧪 Loaded {len(usernames)} usernames.")
+    print(f"🧪 Loaded {len(proxy_pool)} proxies into pool.")
+
+    if not proxy_pool:
+        print("⚠️ No proxies at start, refreshing...")
+        await refresh_proxies()
+        proxy_pool = PROXIES.copy()
+        print(f"✅ Refreshed proxies: {len(proxy_pool)} available.")
+
+        if not proxy_pool:
+            await send_message("❌ Still no valid proxies after refresh. Stopping checker.")
+            CHECKER_RUNNING = False
+            return
+
+    async with aiohttp.ClientSession() as session:
+        while CHECKER_RUNNING:
+            if not usernames:
+                username = generate_username()
+            else:
+                username = usernames.pop(0)
+                used_usernames.add(username)
+
+            proxy = proxy_pool[proxy_index % len(proxy_pool)]
+            print(f"🔍 Checking @{username} with proxy {proxy}")
+
+            result = await check_username(session, username, proxy)
+
+            if result is True:
+                await send_available_username(username)
+            elif result is None:
+                print(f"❌ Proxy failed: {proxy}")
+                proxy_pool.remove(proxy)
+
+            proxy_index += 1
+            await asyncio.sleep(random.uniform(0.4, 1.2))
 
     async with aiohttp.ClientSession() as session:
         while CHECKER_RUNNING:
