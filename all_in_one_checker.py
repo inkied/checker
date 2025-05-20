@@ -16,11 +16,14 @@ HEADERS_LIST = [
 ]
 
 proxy_pool = []
-proxy_usage = {}
+proxy_usage = {}       # proxy -> usage count
+proxy_failures = {}    # proxy -> failure count
 proxy_lock = asyncio.Lock()
 running = False
 last_update_id = None
 MAX_CONCURRENT_CHECKS = 30
+MAX_PROXY_USES = 75          # Max requests per proxy before reuse is blocked
+MAX_PROXY_FAILURES = 3       # Remove proxy after these many failures
 
 async def send_telegram_message(session, text, buttons=False):
     payload = {
@@ -43,7 +46,7 @@ async def send_telegram_message(session, text, buttons=False):
         print(f"[Telegram send error] {e}")
 
 async def scrape_proxies(session):
-    global proxy_pool, proxy_usage
+    global proxy_pool, proxy_usage, proxy_failures
     print("[INFO] Scraping proxies...")
     sources = {
         "http": [
@@ -65,14 +68,14 @@ async def scrape_proxies(session):
     new_proxies = set()
     for ptype, urls in sources.items():
         for url in urls:
-            for attempt in range(2):  # retry each source once if it fails
+            for attempt in range(2):  # retry once if fails
                 try:
                     async with session.get(url, timeout=10) as resp:
                         text = await resp.text()
                         found = re.findall(r'(\d{1,3}(?:\.\d{1,3}){3}:\d+)', text)
                         for proxy in found:
                             new_proxies.add(f"{ptype}://{proxy}")
-                    break  # success, stop retrying this URL
+                    break
                 except:
                     if attempt == 1:
                         print(f"[WARN] Failed to fetch from {url}")
@@ -103,7 +106,8 @@ async def scrape_proxies(session):
 
     async with proxy_lock:
         proxy_pool = valid_proxies
-        proxy_usage.clear()
+        proxy_usage = {p: 0 for p in proxy_pool}
+        proxy_failures = {p: 0 for p in proxy_pool}
 
     await send_telegram_message(session, f"✅ Proxy validation complete. Valid proxies: {len(proxy_pool)}", buttons=True)
 
@@ -111,15 +115,32 @@ async def get_proxy():
     async with proxy_lock:
         if not proxy_pool:
             return None
-        sorted_proxies = sorted(proxy_pool, key=lambda p: proxy_usage.get(p, 0))
-        proxy = sorted_proxies[0]
+        usable_proxies = [p for p in proxy_pool
+                          if proxy_usage.get(p, 0) < MAX_PROXY_USES and
+                             proxy_failures.get(p, 0) < MAX_PROXY_FAILURES]
+        if not usable_proxies:
+            # Fallback: reuse proxies below usage max ignoring failures (optional)
+            usable_proxies = [p for p in proxy_pool if proxy_usage.get(p, 0) < MAX_PROXY_USES]
+            if not usable_proxies:
+                return None
+        proxy = min(usable_proxies, key=lambda p: proxy_usage.get(p, 0))
         proxy_usage[proxy] = proxy_usage.get(proxy, 0) + 1
         return proxy
+
+async def report_proxy_failure(proxy):
+    async with proxy_lock:
+        proxy_failures[proxy] = proxy_failures.get(proxy, 0) + 1
+        if proxy_failures[proxy] >= MAX_PROXY_FAILURES:
+            if proxy in proxy_pool:
+                proxy_pool.remove(proxy)
+                proxy_usage.pop(proxy, None)
+                proxy_failures.pop(proxy, None)
+                print(f"[INFO] Removed bad proxy: {proxy}")
 
 async def get_proxy_health():
     async with proxy_lock:
         total = len(proxy_pool)
-        usable = sum(1 for p in proxy_pool if proxy_usage.get(p, 0) < 5)
+        usable = sum(1 for p in proxy_pool if proxy_usage.get(p, 0) < MAX_PROXY_USES and proxy_failures.get(p, 0) < MAX_PROXY_FAILURES)
     health_pct = int((usable / total) * 100) if total > 0 else 0
     return total, usable, health_pct
 
@@ -142,8 +163,12 @@ async def check_username(session, username):
         async with session.get(url, headers=headers, proxy=proxy, timeout=10) as r:
             if r.status == 404:
                 await send_telegram_message(session, f"Available: *{username}*\nhttps://www.tiktok.com/@{username}")
-    except:
-        pass
+            elif r.status == 429:
+                await report_proxy_failure(proxy)
+            elif r.status >= 500:
+                await report_proxy_failure(proxy)
+    except Exception:
+        await report_proxy_failure(proxy)
 
 async def checker_loop():
     global running
@@ -187,7 +212,7 @@ async def handle_telegram_updates():
                                 total, usable, health_pct = await get_proxy_health()
                                 msg_text = (f"Proxy Health\n"
                                             f"Total Valid Proxies: {total}\n"
-                                            f"Usable Proxies (<5 uses): {usable}\n"
+                                            f"Usable Proxies (< max uses and failures): {usable}\n"
                                             f"Health: {health_pct}%")
                                 await send_telegram_message(session, msg_text, buttons=True)
 
@@ -195,40 +220,4 @@ async def handle_telegram_updates():
                             data = update['callback_query']['data']
 
                             if data == 'start':
-                                if not running:
-                                    running = True
-                                    await send_telegram_message(session, "Checker started.")
-                                else:
-                                    await send_telegram_message(session, "Already running.")
-                            elif data == 'stop':
-                                running = False
-                                await send_telegram_message(session, "Checker stopped.")
-                            elif data == 'proxies':
-                                total, usable, health_pct = await get_proxy_health()
-                                msg_text = (f"Proxy Health\n"
-                                            f"Total Valid Proxies: {total}\n"
-                                            f"Usable Proxies (<5 uses): {usable}\n"
-                                            f"Health: {health_pct}%")
-                                await send_telegram_message(session, msg_text, buttons=True)
-                            elif data == 'rescrape':
-                                await send_telegram_message(session, "Starting proxy rescrape and validation. This may take a moment...")
-                                asyncio.create_task(scrape_proxies(session))
-            except Exception as e:
-                print(f"[ERROR] Telegram polling: {e}")
-
-            await asyncio.sleep(2)
-
-async def periodic_proxy_rescrape(session):
-    while True:
-        await asyncio.sleep(600)
-        await scrape_proxies(session)
-
-async def main():
-    print("✅ New version deployed and running on Railway")
-    async with aiohttp.ClientSession() as session:
-        await send_telegram_message(session, "Checker is online.\nUse the buttons below for commands.", buttons=True)
-        await scrape_proxies(session)
-
-        # Start all background tasks
-        asyncio.create_task(periodic_proxy_rescrape(session))
-        asyncio.create_task
+                                if not running
