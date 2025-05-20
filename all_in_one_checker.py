@@ -5,33 +5,23 @@ import os
 import json
 import string
 from fastapi import FastAPI, Request
-from aiohttp import ClientSession
-from typing import List
 import uvicorn
 
 app = FastAPI()
 
+# === Config ===
 TELEGRAM_TOKEN = "7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A"
 TELEGRAM_CHAT_ID = "7755395640"
 WEBSHARE_API_KEY = "cmaqd2pxyf6h1bl93ozf7z12mm2efjsvbd7w366z"
-
-if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_TOKEN is missing or invalid.")
-
-if not TELEGRAM_CHAT_ID:
-    raise ValueError("TELEGRAM_CHAT_ID is missing or invalid.")
-
-if not WEBSHARE_API_KEY:
-    raise ValueError("WEBSHARE_API_KEY is missing.")
+PROXIES_FILE = "valid_proxies.txt"
 
 BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 CHECKER_RUNNING = False
-PROXIES: List[str] = []
+PROXIES = []
 controller_message_id = None
 
-# === Utility Functions ===
-
+# === Utils ===
 def generate_username():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
 
@@ -42,6 +32,15 @@ def load_usernames():
     except FileNotFoundError:
         return []
 
+def load_cached_proxies():
+    global PROXIES
+    if os.path.exists(PROXIES_FILE):
+        with open(PROXIES_FILE, "r") as f:
+            PROXIES = [line.strip() for line in f if line.strip()]
+        print(f"Loaded {len(PROXIES)} proxies from cache.")
+    else:
+        print("No proxy cache found.")
+
 async def validate_proxy(proxy):
     try:
         async with aiohttp.ClientSession() as session:
@@ -50,15 +49,11 @@ async def validate_proxy(proxy):
     except:
         return False
 
-# === NEW PROXY FETCH + VALIDATION FUNCTION ===
-
 async def refresh_proxies():
     global PROXIES
-    print("🌐 Fetching proxies from Webshare...")
+    print("Fetching proxies from Webshare...")
 
-    headers = {
-        "Authorization": f"Token {WEBSHARE_API_KEY}"
-    }
+    headers = {"Authorization": f"Token {WEBSHARE_API_KEY}"}
     url = "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page_size=1000&page=1"
 
     try:
@@ -68,10 +63,10 @@ async def refresh_proxies():
                 proxies_raw = data.get("results", [])
 
         raw_proxies = [
-            f"{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}"
+            f"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}"
             for p in proxies_raw
         ]
-        print(f"📦 Pulled {len(raw_proxies)} raw proxies")
+        print(f"Pulled {len(raw_proxies)} raw proxies")
 
         valid_proxies = []
         semaphore = asyncio.Semaphore(50)
@@ -81,19 +76,22 @@ async def refresh_proxies():
             async with semaphore:
                 if len(valid_proxies) >= 100:
                     return
-                full_proxy = proxy if proxy.startswith("http") else f"http://{proxy}"
-                if await validate_proxy(full_proxy):
-                    valid_proxies.append(full_proxy)
+                if await validate_proxy(proxy):
+                    valid_proxies.append(proxy)
 
         await asyncio.gather(*[validate_and_collect(p) for p in raw_proxies])
         PROXIES = valid_proxies[:100]
-        print(f"✅ {len(PROXIES)} working proxies after validation.")
+
+        with open(PROXIES_FILE, "w") as f:
+            for proxy in PROXIES:
+                f.write(proxy + "\n")
+
+        print(f"Validated and saved {len(PROXIES)} proxies.")
 
     except Exception as e:
-        print(f"❌ Proxy fetch/validation error: {e}")
+        print(f"Proxy fetch/validation error: {e}")
 
-# === Telegram Bot Logic ===
-
+# === Telegram Functions ===
 async def send_message(text, buttons=None):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -119,10 +117,9 @@ async def edit_message(message_id, text, buttons=None):
 
 async def send_available_username(username):
     buttons = [[{"text": "Claim", "url": f"https://www.tiktok.com/@{username}"}]]
-    await send_message(f"✅ <b>@{username}</b> is <u>available</u>!", buttons)
+    await send_message(f"✅ <b>@{username}</b> is available", buttons)
 
-# === Checker Logic ===
-
+# === Checker ===
 async def check_username(session, username, proxy):
     url = f"https://www.tiktok.com/@{username}"
     headers = {
@@ -142,7 +139,6 @@ async def run_checker_loop():
     global CHECKER_RUNNING
     CHECKER_RUNNING = True
     usernames = load_usernames()
-    used_usernames = set()
     proxy_pool = PROXIES.copy()
     proxy_index = 0
 
@@ -152,14 +148,13 @@ async def run_checker_loop():
                 username = generate_username()
             else:
                 username = usernames.pop(0)
-                used_usernames.add(username)
 
             if not proxy_pool:
                 await send_message("⚠️ No working proxies left. Refreshing...")
                 await refresh_proxies()
                 proxy_pool = PROXIES.copy()
                 if not proxy_pool:
-                    await send_message("❌ No valid proxies available. Stopping checker.")
+                    await send_message("No valid proxies available. Stopping checker.")
                     CHECKER_RUNNING = False
                     break
 
@@ -170,11 +165,11 @@ async def run_checker_loop():
                 await send_available_username(username)
             elif result is None:
                 proxy_pool.remove(proxy)
+
             proxy_index += 1
             await asyncio.sleep(random.uniform(0.4, 1.2))
 
-# === FastAPI Telegram Webhook ===
-
+# === FastAPI Webhook ===
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     global CHECKER_RUNNING, controller_message_id
@@ -187,11 +182,11 @@ async def telegram_webhook(request: Request):
         text = message["text"]
         if text == "/start":
             buttons = [[
-                {"text": "▶️ Start", "callback_data": "start"},
-                {"text": "⛔ Stop", "callback_data": "stop"},
-                {"text": "🔁 Refresh Proxies", "callback_data": "refresh"}
+                {"text": "Start", "callback_data": "start"},
+                {"text": "Stop", "callback_data": "stop"},
+                {"text": "Refresh Proxies", "callback_data": "refresh"}
             ]]
-            await send_message("🔧 <b>Checker Controls:</b>", buttons)
+            await send_message("Checker Controls:", buttons)
         return {"ok": True}
 
     if "data" in callback:
@@ -201,22 +196,21 @@ async def telegram_webhook(request: Request):
 
         if action == "start" and not CHECKER_RUNNING:
             asyncio.create_task(run_checker_loop())
-            await edit_message(message_id, "✅ Checker is running...", [
-                [{"text": "⛔ Stop", "callback_data": "stop"}]
-            ])
+            await edit_message(message_id, "Checker is running...", [[{"text": "Stop", "callback_data": "stop"}]])
         elif action == "stop":
             CHECKER_RUNNING = False
-            await edit_message(message_id, "🛑 Checker stopped.", [
-                [{"text": "▶️ Start", "callback_data": "start"}]
-            ])
+            await edit_message(message_id, "Checker stopped.", [[{"text": "Start", "callback_data": "start"}]])
         elif action == "refresh":
-            await edit_message(message_id, "♻️ Refreshing proxies...")
+            await edit_message(message_id, "Refreshing proxies...")
             await refresh_proxies()
-            await edit_message(message_id, f"✅ Loaded {len(PROXIES)} working proxies.", [
-                [{"text": "▶️ Start", "callback_data": "start"}]
-            ])
+            await edit_message(message_id, f"Loaded {len(PROXIES)} working proxies.", [[{"text": "Start", "callback_data": "start"}]])
+
     return {"ok": True}
 
-# === Run with Uvicorn (locally or via Railway) ===
+# === Main ===
 if __name__ == "__main__":
+    load_cached_proxies()
+    if not PROXIES:
+        asyncio.run(refresh_proxies())
+
     uvicorn.run(app, host="0.0.0.0", port=8080)
