@@ -37,8 +37,10 @@ def load_usernames():
 
 async def get_proxies_from_webshare():
     headers = {"Authorization": f"Token {WEBSHARE_API_KEY}"}
+    url = "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page_size=100&page=1"
+    
     async with aiohttp.ClientSession() as session:
-        async with session.get("https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page_size=100", headers=headers) as response:
+        async with session.get(url, headers=headers) as response:
             data = await response.json()
             return [
                 f"http://{p['username']}:{p['password']}@{p['ip']}:{p['port']}"
