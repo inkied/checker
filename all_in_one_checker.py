@@ -6,38 +6,49 @@ import json
 import string
 from fastapi import FastAPI, Request
 import uvicorn
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 
-# Your tokens here:
-TELEGRAM_TOKEN = "7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A"
-TELEGRAM_CHAT_ID = "7755395640"
-WEBSHARE_API_KEY = "cmaqd2pxyf6h1bl93ozf7z12mm2efjsvbd7w366z"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+WEBSHARE_API_KEY = os.getenv("WEBSHARE_API_KEY")
 
-PROXIES_FILE = "proxies.txt"
+if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not WEBSHARE_API_KEY:
+    raise ValueError("Missing required environment variables.")
 
 BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
+PROXIES_FILE = "proxies.txt"
 CHECKER_RUNNING = False
 PROXIES = []
 controller_message_id = None
 
-# Consonants and vowels to make pronounceable combos like "tsla"
+# Pronounceable-ish 4-letter combos (semi-OG style, brand-like)
+# These are patterns with consonant-vowel-consonant-vowel or repeaters
 CONSONANTS = "bcdfghjklmnpqrstvwxyz"
 VOWELS = "aeiou"
 
 def generate_pronounceable_4l():
-    # Pattern: Consonant + Vowel + Consonant + Consonant (like tsla, mlsk)
-    c1 = random.choice(CONSONANTS)
-    v1 = random.choice(VOWELS)
-    c2 = random.choice(CONSONANTS)
-    c3 = random.choice(CONSONANTS)
-    return f"{c1}{v1}{c2}{c3}"
+    # Pattern examples: CVCV or CVVC or CCVV
+    pattern = random.choice([
+        "CVCV", "CVVC", "CCVV", "CVCC", "CCVC"
+    ])
+    username = ""
+    for ch in pattern:
+        if ch == "C":
+            username += random.choice(CONSONANTS)
+        elif ch == "V":
+            username += random.choice(VOWELS)
+    return username
 
 def load_usernames():
     try:
         with open("usernames.txt", "r") as f:
-            return [line.strip() for line in f if line.strip()]
+            lines = [line.strip() for line in f if line.strip()]
+            return lines
     except FileNotFoundError:
         return []
 
@@ -85,7 +96,7 @@ async def edit_message(message_id, text, buttons=None):
 
 async def send_available_username(username):
     buttons = [[{"text": "Claim", "url": f"https://www.tiktok.com/@{username}"}]]
-    await send_message(f"<b>@{username}</b> is available!", buttons)
+    await send_message(f"<b>@{username}</b> is available.", buttons)
 
 async def check_username(session, username, proxy):
     url = f"https://www.tiktok.com/@{username}"
@@ -186,7 +197,7 @@ async def run_checker_loop():
                 proxy_pool.remove(proxy)
 
             proxy_index += 1
-            await asyncio.sleep(random.uniform(0.4, 1.0))
+            await asyncio.sleep(random.uniform(0.4, 1.2))
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
