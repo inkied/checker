@@ -12,7 +12,7 @@ import uvicorn
 app = FastAPI()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7755395640")
 WEBSHARE_API_KEY = os.getenv("WEBSHARE_API_KEY")
 BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
