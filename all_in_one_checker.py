@@ -9,11 +9,19 @@ import uvicorn
 
 app = FastAPI()
 
-# === Config ===
 TELEGRAM_TOKEN = "7527264620:AAGG5qpYqV3o0h0NidwmsTOKxqVsmRIaX1A"
 TELEGRAM_CHAT_ID = "7755395640"
 WEBSHARE_API_KEY = "cmaqd2pxyf6h1bl93ozf7z12mm2efjsvbd7w366z"
-PROXIES_FILE = "valid_proxies.txt"
+PROXIES_FILE = "proxies.txt"
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN is missing or invalid.")
+
+if not TELEGRAM_CHAT_ID:
+    raise ValueError("TELEGRAM_CHAT_ID is missing or invalid.")
+
+if not WEBSHARE_API_KEY:
+    raise ValueError("WEBSHARE_API_KEY is missing.")
 
 BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
@@ -21,7 +29,8 @@ CHECKER_RUNNING = False
 PROXIES = []
 controller_message_id = None
 
-# === Utils ===
+# === Utility Functions ===
+
 def generate_username():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
 
@@ -37,9 +46,10 @@ def load_cached_proxies():
     if os.path.exists(PROXIES_FILE):
         with open(PROXIES_FILE, "r") as f:
             PROXIES = [line.strip() for line in f if line.strip()]
-        print(f"Loaded {len(PROXIES)} proxies from cache.")
+        print(f"Loaded {len(PROXIES)} cached proxies.")
     else:
-        print("No proxy cache found.")
+        PROXIES = []
+        print("No cached proxies file found.")
 
 async def validate_proxy(proxy):
     try:
@@ -48,6 +58,8 @@ async def validate_proxy(proxy):
                 return r.status == 200
     except:
         return False
+
+# === Updated Proxy Fetch + Validation ===
 
 async def refresh_proxies():
     global PROXIES
@@ -69,7 +81,7 @@ async def refresh_proxies():
         print(f"Pulled {len(raw_proxies)} raw proxies")
 
         valid_proxies = []
-        semaphore = asyncio.Semaphore(50)
+        semaphore = asyncio.Semaphore(20)
 
         async def validate_and_collect(proxy):
             nonlocal valid_proxies
@@ -79,7 +91,12 @@ async def refresh_proxies():
                 if await validate_proxy(proxy):
                     valid_proxies.append(proxy)
 
-        await asyncio.gather(*[validate_and_collect(p) for p in raw_proxies])
+        for i in range(0, len(raw_proxies), 50):
+            if len(valid_proxies) >= 100:
+                break
+            batch = raw_proxies[i:i+50]
+            await asyncio.gather(*[validate_and_collect(p) for p in batch])
+
         PROXIES = valid_proxies[:100]
 
         with open(PROXIES_FILE, "w") as f:
@@ -91,7 +108,8 @@ async def refresh_proxies():
     except Exception as e:
         print(f"Proxy fetch/validation error: {e}")
 
-# === Telegram Functions ===
+# === Telegram Bot Functions ===
+
 async def send_message(text, buttons=None):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -117,9 +135,10 @@ async def edit_message(message_id, text, buttons=None):
 
 async def send_available_username(username):
     buttons = [[{"text": "Claim", "url": f"https://www.tiktok.com/@{username}"}]]
-    await send_message(f"✅ <b>@{username}</b> is available", buttons)
+    await send_message(f"<b>@{username}</b> is available.", buttons)
 
-# === Checker ===
+# === Checker Logic ===
+
 async def check_username(session, username, proxy):
     url = f"https://www.tiktok.com/@{username}"
     headers = {
@@ -150,7 +169,7 @@ async def run_checker_loop():
                 username = usernames.pop(0)
 
             if not proxy_pool:
-                await send_message("⚠️ No working proxies left. Refreshing...")
+                await send_message("No working proxies left. Refreshing...")
                 await refresh_proxies()
                 proxy_pool = PROXIES.copy()
                 if not proxy_pool:
@@ -169,7 +188,8 @@ async def run_checker_loop():
             proxy_index += 1
             await asyncio.sleep(random.uniform(0.4, 1.2))
 
-# === FastAPI Webhook ===
+# === FastAPI Telegram Webhook ===
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     global CHECKER_RUNNING, controller_message_id
@@ -196,21 +216,26 @@ async def telegram_webhook(request: Request):
 
         if action == "start" and not CHECKER_RUNNING:
             asyncio.create_task(run_checker_loop())
-            await edit_message(message_id, "Checker is running...", [[{"text": "Stop", "callback_data": "stop"}]])
+            await edit_message(message_id, "Checker is running...", [
+                [{"text": "Stop", "callback_data": "stop"}]
+            ])
         elif action == "stop":
             CHECKER_RUNNING = False
-            await edit_message(message_id, "Checker stopped.", [[{"text": "Start", "callback_data": "start"}]])
+            await edit_message(message_id, "Checker stopped.", [
+                [{"text": "Start", "callback_data": "start"}]
+            ])
         elif action == "refresh":
             await edit_message(message_id, "Refreshing proxies...")
             await refresh_proxies()
-            await edit_message(message_id, f"Loaded {len(PROXIES)} working proxies.", [[{"text": "Start", "callback_data": "start"}]])
-
+            await edit_message(message_id, f"Loaded {len(PROXIES)} working proxies.", [
+                [{"text": "Start", "callback_data": "start"}]
+            ])
     return {"ok": True}
 
-# === Main ===
+# === Startup ===
+
 if __name__ == "__main__":
     load_cached_proxies()
     if not PROXIES:
-        asyncio.run(refresh_proxies())
-
+        print("No cached proxies found. Use 'Refresh Proxies' in Telegram to fetch new proxies.")
     uvicorn.run(app, host="0.0.0.0", port=8080)
