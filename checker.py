@@ -5,50 +5,45 @@ import os
 import json
 import string
 from fastapi import FastAPI, Request
-import uvicorn
 from dotenv import load_dotenv
+import uvicorn
 
-load_dotenv()
+load_dotenv()  # load environment variables from .env
 
 app = FastAPI()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 WEBSHARE_API_KEY = os.getenv("WEBSHARE_API_KEY")
+PROXIES_FILE = "proxies.txt"
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not WEBSHARE_API_KEY:
-    raise ValueError("Missing required environment variables.")
+    raise ValueError("Missing one or more required environment variables.")
 
 BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-PROXIES_FILE = "proxies.txt"
 CHECKER_RUNNING = False
 PROXIES = []
 controller_message_id = None
 
-# Pronounceable-ish 4-letter combos (semi-OG style, brand-like)
-# These are patterns with consonant-vowel-consonant-vowel or repeaters
-CONSONANTS = "bcdfghjklmnpqrstvwxyz"
-VOWELS = "aeiou"
+# Curated 4-letter pronounceable usernames list
+PRONOUNCEABLE_4L_USERNAMES = [
+    "tsla", "daxa", "zova", "mira", "nexo", "vexo", "lira", "sora",
+    "kova", "bexa", "nala", "vila", "rimo", "tala", "zena", "sila"
+]
 
-def generate_pronounceable_4l():
-    # Pattern examples: CVCV or CVVC or CCVV
-    pattern = random.choice([
-        "CVCV", "CVVC", "CCVV", "CVCC", "CCVC"
-    ])
-    username = ""
-    for ch in pattern:
-        if ch == "C":
-            username += random.choice(CONSONANTS)
-        elif ch == "V":
-            username += random.choice(VOWELS)
-    return username
+def generate_username():
+    # 70% chance to pick from curated list, else random 4-letter alphanumeric
+    if random.random() < 0.7 and PRONOUNCEABLE_4L_USERNAMES:
+        return random.choice(PRONOUNCEABLE_4L_USERNAMES)
+    else:
+        chars = string.ascii_lowercase + string.digits
+        return ''.join(random.choices(chars, k=4))
 
 def load_usernames():
     try:
         with open("usernames.txt", "r") as f:
-            lines = [line.strip() for line in f if line.strip()]
-            return lines
+            return [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
         return []
 
@@ -157,6 +152,7 @@ async def refresh_proxies():
                 f.write(proxy + "\n")
 
         await send_message(f"Validated and saved {len(PROXIES)} proxies.")
+
         print(f"Validated and saved {len(PROXIES)} proxies.")
         if len(PROXIES) < 50:
             print("Warning: Less than 50 valid proxies found.")
@@ -175,7 +171,7 @@ async def run_checker_loop():
     async with aiohttp.ClientSession() as session:
         while CHECKER_RUNNING:
             if not usernames:
-                username = generate_pronounceable_4l()
+                username = generate_username()
             else:
                 username = usernames.pop(0)
 
