@@ -5,20 +5,29 @@ import os
 import json
 import string
 from fastapi import FastAPI, Request
-from dotenv import load_dotenv
 import uvicorn
+from dotenv import load_dotenv
 
-load_dotenv()  # load environment variables from .env
+load_dotenv()  # load variables from .env
 
 app = FastAPI()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-WEBSHARE_API_KEY = os.getenv("WEBSHARE_API_KEY")
-PROXIES_FILE = "proxies.txt"
+# Load secrets from .env
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+WEBSHARE_API_KEY = os.getenv("WEBSHARE_API_KEY", "")
 
-if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not WEBSHARE_API_KEY:
-    raise ValueError("Missing one or more required environment variables.")
+PROXIES_FILE = "proxies.txt"
+USERNAMES_FILE = "usernames.txt"
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN is missing or invalid.")
+
+if not TELEGRAM_CHAT_ID:
+    raise ValueError("TELEGRAM_CHAT_ID is missing or invalid.")
+
+if not WEBSHARE_API_KEY:
+    raise ValueError("WEBSHARE_API_KEY is missing.")
 
 BOT_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
@@ -26,26 +35,26 @@ CHECKER_RUNNING = False
 PROXIES = []
 controller_message_id = None
 
-# Curated 4-letter pronounceable usernames list
-PRONOUNCEABLE_4L_USERNAMES = [
-    "tsla", "daxa", "zova", "mira", "nexo", "vexo", "lira", "sora",
-    "kova", "bexa", "nala", "vila", "rimo", "tala", "zena", "sila"
+# Curated pronounceable-ish 4-letter usernames fallback (in case usernames.txt empty)
+DEFAULT_USERNAMES = [
+    "tsla", "nexo", "viva", "luna", "zora", "milo", "kora", "bora",
+    "nova", "finn", "juno", "kato", "rhea", "lyra", "sora", "mina",
+    "cora", "dova", "tova", "ziva"
 ]
-
-def generate_username():
-    # 70% chance to pick from curated list, else random 4-letter alphanumeric
-    if random.random() < 0.7 and PRONOUNCEABLE_4L_USERNAMES:
-        return random.choice(PRONOUNCEABLE_4L_USERNAMES)
-    else:
-        chars = string.ascii_lowercase + string.digits
-        return ''.join(random.choices(chars, k=4))
 
 def load_usernames():
     try:
-        with open("usernames.txt", "r") as f:
-            return [line.strip() for line in f if line.strip()]
+        with open(USERNAMES_FILE, "r") as f:
+            names = [line.strip().lower() for line in f if line.strip()]
+        if names:
+            print(f"Loaded {len(names)} usernames from {USERNAMES_FILE}")
+            return names
+        else:
+            print(f"{USERNAMES_FILE} is empty, using default usernames.")
+            return DEFAULT_USERNAMES.copy()
     except FileNotFoundError:
-        return []
+        print(f"{USERNAMES_FILE} not found, using default usernames.")
+        return DEFAULT_USERNAMES.copy()
 
 def load_cached_proxies():
     global PROXIES
@@ -91,7 +100,7 @@ async def edit_message(message_id, text, buttons=None):
 
 async def send_available_username(username):
     buttons = [[{"text": "Claim", "url": f"https://www.tiktok.com/@{username}"}]]
-    await send_message(f"<b>@{username}</b> is available.", buttons)
+    await send_message(f"<b>@{username}</b> is available!", buttons)
 
 async def check_username(session, username, proxy):
     url = f"https://www.tiktok.com/@{username}"
@@ -111,20 +120,20 @@ async def check_username(session, username, proxy):
 async def refresh_proxies():
     global PROXIES
     print("Fetching proxies from Webshare...")
-    await send_message("Starting proxy refresh and validation...")
+    await send_message("🔄 Starting proxy refresh and validation...")
 
     headers = {"Authorization": f"Token {WEBSHARE_API_KEY}"}
     url = "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page_size=100&page=1"
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=10) as resp:
+            async with session.get(url, headers=headers, timeout=15) as resp:
                 data = await resp.json()
                 proxies_raw = data.get("results", [])
 
         proxies_raw = proxies_raw[:100]
 
-        await send_message(f"Validating {len(proxies_raw)} proxies...")
+        await send_message(f"⚙️ Validating {len(proxies_raw)} proxies...")
 
         raw_proxies = [
             f"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}"
@@ -151,15 +160,14 @@ async def refresh_proxies():
             for proxy in PROXIES:
                 f.write(proxy + "\n")
 
-        await send_message(f"Validated and saved {len(PROXIES)} proxies.")
-
+        await send_message(f"✅ Validated and saved {len(PROXIES)} proxies.")
         print(f"Validated and saved {len(PROXIES)} proxies.")
         if len(PROXIES) < 50:
             print("Warning: Less than 50 valid proxies found.")
 
     except Exception as e:
         print(f"Proxy fetch/validation error: {e}")
-        await send_message(f"Proxy fetch/validation error: {e}")
+        await send_message(f"⚠️ Proxy fetch/validation error: {e}")
 
 async def run_checker_loop():
     global CHECKER_RUNNING
@@ -171,16 +179,17 @@ async def run_checker_loop():
     async with aiohttp.ClientSession() as session:
         while CHECKER_RUNNING:
             if not usernames:
-                username = generate_username()
+                # Fallback to random 4-letter username
+                username = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
             else:
                 username = usernames.pop(0)
 
             if not proxy_pool:
-                await send_message("No working proxies left. Refreshing...")
+                await send_message("⚠️ No working proxies left. Refreshing...")
                 await refresh_proxies()
                 proxy_pool = PROXIES.copy()
                 if not proxy_pool:
-                    await send_message("No valid proxies available. Stopping checker.")
+                    await send_message("❌ No valid proxies available. Stopping checker.")
                     CHECKER_RUNNING = False
                     break
 
@@ -190,10 +199,11 @@ async def run_checker_loop():
             if result is True:
                 await send_available_username(username)
             elif result is None:
+                # Remove failed proxy from pool
                 proxy_pool.remove(proxy)
 
             proxy_index += 1
-            await asyncio.sleep(random.uniform(0.4, 1.2))
+            await asyncio.sleep(random.uniform(0.4, 1.0))
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
