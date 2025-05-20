@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 aiohttp
 aiohttp_socks
+aiofiles
