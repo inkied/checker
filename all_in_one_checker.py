@@ -68,7 +68,9 @@ async def refresh_proxies():
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=10) as resp:
                 data = await resp.json()
-                proxies_raw = data.get("results", [])[:100]  # limit to 100 proxies
+                proxies_raw = data.get("results", [])
+
+        proxies_raw = proxies_raw[:100]  # Limit to 100 proxies max
 
         raw_proxies = [
             f"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}"
